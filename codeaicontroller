@@ -1,0 +1,172 @@
+const axios = require('axios');
+const Document     = require('../models/Document');
+const DocumentData = require('../models/DocumentData');
+const asyncHandler = require('../utils/asyncHandler');
+
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000';
+
+// ── Helper: get document + verify ownership ────────────────────────────────
+const getDocument = async (documentId, userId) => {
+  const document = await Document.findById(documentId);
+  if (!document) throw Object.assign(new Error('Document not found'), { statusCode: 404 });
+  if (document.userId.toString() !== userId.toString()) {
+    throw Object.assign(new Error('Not authorized'), { statusCode: 403 });
+  }
+  return document;
+};
+
+// ── GET /api/ai/:documentId/data ───────────────────────────────────────────
+// Return all AI outputs for a document in one call
+const getDocumentData = asyncHandler(async (req, res) => {
+  await getDocument(req.params.documentId, req.user._id);
+
+  const data = await DocumentData.findOne({ documentId: req.params.documentId });
+  if (!data) {
+    return res.status(404).json({ success: false, message: 'Document data not found' });
+  }
+
+  res.json({ success: true, data });
+});
+
+// ── POST /api/ai/:documentId/chat ──────────────────────────────────────────
+// Forward question to FastAPI, save message pair to chatHistory
+const chat = asyncHandler(async (req, res) => {
+  const { question } = req.body;
+  if (!question || !question.trim()) {
+    return res.status(400).json({ success: false, message: 'Question is required' });
+  }
+
+  const document = await getDocument(req.params.documentId, req.user._id);
+  const docData  = await DocumentData.findOne({ documentId: document._id });
+
+  // Call FastAPI with the session_id stored in MongoDB
+  const aiResponse = await axios.post(`${AI_SERVICE_URL}/api/chat/ask`, {
+    session_id: document.sessionId,
+    question,
+  });
+
+  const { answer } = aiResponse.data;
+
+  // Append user message + AI response to chat history
+  docData.chatHistory.push({ role: 'user', message: question });
+  docData.chatHistory.push({ role: 'ai',   message: answer   });
+  docData.chatUpdatedAt = new Date();
+  await docData.save();
+
+  res.json({
+    success: true,
+    data: { answer, chatHistory: docData.chatHistory },
+  });
+});
+
+// ── POST /api/ai/:documentId/summary ──────────────────────────────────────
+// Cache check: if already generated, return saved version — no FastAPI call
+const getSummary = asyncHandler(async (req, res) => {
+  const document = await getDocument(req.params.documentId, req.user._id);
+  const docData  = await DocumentData.findOne({ documentId: document._id });
+
+  // Return cached summary if it exists
+  if (docData.summaryGeneratedAt && docData.summary) {
+    return res.json({ success: true, data: { summary: docData.summary, cached: true } });
+  }
+
+  // Generate fresh summary
+  const aiResponse = await axios.post(`${AI_SERVICE_URL}/api/summary/generate`, {
+    session_id: document.sessionId,
+  });
+
+  docData.summary            = aiResponse.data.summary;
+  docData.summaryGeneratedAt = new Date();
+  await docData.save();
+
+  res.json({ success: true, data: { summary: docData.summary, cached: false } });
+});
+
+// ── POST /api/ai/:documentId/flashcards ───────────────────────────────────
+// Cache check: same pattern as summary
+const getFlashcards = asyncHandler(async (req, res) => {
+  const { num_cards = 10 } = req.body;
+  const document = await getDocument(req.params.documentId, req.user._id);
+  const docData  = await DocumentData.findOne({ documentId: document._id });
+
+  // Return cached flashcards if they exist
+  if (docData.flashcardsGeneratedAt && docData.flashcards.length > 0) {
+    return res.json({ success: true, data: { flashcards: docData.flashcards, cached: true } });
+  }
+
+  const aiResponse = await axios.post(`${AI_SERVICE_URL}/api/quiz/flashcards`, {
+    session_id: document.sessionId,
+    num_cards,
+  });
+
+  docData.flashcards            = aiResponse.data.flashcards;
+  docData.flashcardsGeneratedAt = new Date();
+  await docData.save();
+
+  res.json({ success: true, data: { flashcards: docData.flashcards, cached: false } });
+});
+
+// ── POST /api/ai/:documentId/quiz ──────────────────────────────────────────
+// Quiz is NEVER cached — always generate fresh, always save as new attempt
+const generateQuiz = asyncHandler(async (req, res) => {
+  const { num_questions = 5 } = req.body;
+  const document = await getDocument(req.params.documentId, req.user._id);
+  const docData  = await DocumentData.findOne({ documentId: document._id });
+
+  const aiResponse = await axios.post(`${AI_SERVICE_URL}/api/quiz/generate`, {
+    session_id: document.sessionId,
+    num_questions,
+  });
+
+  const questions = aiResponse.data.questions;
+
+  // Push new quiz attempt (score is null until user submits answers)
+  docData.quizzes.push({
+    questions,
+    score:       null,
+    total:       questions.length,
+    attemptedAt: new Date(),
+  });
+  await docData.save();
+
+  const quizIndex = docData.quizzes.length - 1;
+
+  res.json({
+    success: true,
+    data: { quizIndex, questions, total: questions.length },
+  });
+});
+
+// ── POST /api/ai/:documentId/quiz/:quizIndex/score ─────────────────────────
+// Save the user's score for a quiz attempt
+const saveQuizScore = asyncHandler(async (req, res) => {
+  const { score } = req.body;
+  const { documentId, quizIndex } = req.params;
+
+  if (score === undefined || score === null) {
+    return res.status(400).json({ success: false, message: 'Score is required' });
+  }
+
+  const document = await getDocument(documentId, req.user._id);
+  const docData  = await DocumentData.findOne({ documentId: document._id });
+
+  const idx = parseInt(quizIndex);
+  if (idx < 0 || idx >= docData.quizzes.length) {
+    return res.status(404).json({ success: false, message: 'Quiz attempt not found' });
+  }
+
+  docData.quizzes[idx].score = score;
+  docData.markModified('quizzes'); // Required for Mongoose to detect nested array changes
+  await docData.save();
+
+  res.json({ success: true, data: docData.quizzes[idx] });
+});
+
+module.exports = {
+  getDocumentData,
+  chat,
+  getSummary,
+  getFlashcards,
+  generateQuiz,
+  saveQuizScore,
+};

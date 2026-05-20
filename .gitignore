@@ -1,0 +1,8 @@
+backend/node_modules/
+studyai-frontend/node_modules/
+ai-service/venv/
+ai-service/__pycache__/
+**/*.pyc
+**/.env
+**/logs/
+**/dist/

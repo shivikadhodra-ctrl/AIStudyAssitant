@@ -1,0 +1,87 @@
+from langchain.prompts import PromptTemplate
+
+# ── Chat prompt (your existing custom prompt) ──────────────────────────────
+CUSTOM_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template="""
+Use the following pieces of context to answer the question.
+
+If the answer is not present in the context, say:
+"I cannot find this in the uploaded documents."
+
+Do NOT make up answers.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:"""
+)
+
+# ── Summary prompt ─────────────────────────────────────────────────────────
+SUMMARY_PROMPT = PromptTemplate(
+    input_variables=["context"],
+    template="""
+You are an expert academic summarizer.
+
+Read the following document content and produce a clear, structured summary:
+
+1. Main Topic (1 sentence)
+2. Key Points (bullet list, max 6 points)
+3. Important Terms (up to 5 with brief definitions)
+4. Conclusion (2-3 sentences)
+
+Document:
+{context}
+
+Summary:"""
+)
+
+# ── Quiz generation prompt ─────────────────────────────────────────────────
+QUIZ_PROMPT = PromptTemplate(
+    input_variables=["context", "num_questions"],
+    template="""
+You are a quiz generator. Based on the document content below,
+generate exactly {num_questions} multiple-choice questions.
+
+Rules:
+- Each question must have 4 options (A, B, C, D)
+- Clearly mark the correct answer
+- Questions must come ONLY from the document
+
+Return ONLY valid JSON, no extra text:
+[
+  {{
+    "question": "...",
+    "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
+    "answer": "A"
+  }}
+]
+
+Document:
+{context}
+
+JSON:"""
+)
+
+# ── Flashcard prompt ───────────────────────────────────────────────────────
+FLASHCARD_PROMPT = PromptTemplate(
+    input_variables=["context", "num_cards"],
+    template="""
+Generate exactly {num_cards} study flashcards from the document below.
+
+Return ONLY valid JSON, no extra text:
+[
+  {{
+    "front": "Term or concept",
+    "back": "Clear, concise definition or explanation"
+  }}
+]
+
+Document:
+{context}
+
+JSON:"""
+)

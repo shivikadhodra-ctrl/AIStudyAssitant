@@ -1,0 +1,132 @@
+from langchain.prompts import PromptTemplate
+
+# ── Existing chat prompt (unchanged) ──────────────────────────────────────
+CUSTOM_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template="""
+Use the following pieces of context to answer the question.
+
+If the answer is not present in the context, say:
+"I cannot find this in the uploaded documents."
+
+Do NOT make up answers.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:"""
+)
+
+# ── Mode selector prompts (AI Intelligence layer) ──────────────────────────
+# These are prepended to the streaming prompt based on user's selected mode.
+# Nothing changes in RAG — only the instruction to the LLM changes.
+
+MODE_PROMPTS = {
+    "normal": "",  # no extra instruction — default behavior
+
+    "beginner": """You are explaining to a complete beginner.
+Use very simple language. Avoid technical jargon.
+Use real-life analogies and examples wherever possible.
+If a term is technical, explain it in brackets right after using it.""",
+
+    "exam": """You are giving an exam-ready answer.
+Structure your response with clear headings and bullet points.
+Include key definitions, important terms, and any relevant formulas.
+Make it concise but complete — scoring-focused.""",
+
+    "quick": """Give a short, direct answer in 3-5 lines maximum.
+No explanation, no examples, no headings.
+Just the core answer.""",
+
+    "deep": """Give an in-depth, thorough explanation.
+Cover the main concept, sub-parts, edge cases, and examples.
+Use technical language where appropriate.
+Structure with headings if the answer is long.""",
+}
+
+
+def get_mode_prompt(mode: str) -> str:
+    """Return the instruction string for the given mode. Defaults to normal."""
+    return MODE_PROMPTS.get(mode.lower(), MODE_PROMPTS["normal"])
+
+
+# ── Summary prompt (unchanged) ────────────────────────────────────────────
+SUMMARY_PROMPT = PromptTemplate(
+    input_variables=["context"],
+    template="""
+You are an expert academic summarizer.
+
+Read the following document content and produce a clear, structured summary:
+
+1. Main Topic (1 sentence)
+2. Key Points (bullet list, max 6 points)
+3. Important Terms (up to 5 with brief definitions)
+4. Conclusion (2-3 sentences)
+
+Document:
+{context}
+
+Summary:"""
+)
+
+# ── Quiz generation prompt (unchanged) ───────────────────────────────────
+QUIZ_PROMPT = PromptTemplate(
+    input_variables=["context", "num_questions"],
+    template="""
+You are a quiz generator.
+
+Based ONLY on the document content below,
+generate exactly {num_questions} multiple-choice questions.
+
+Rules:
+- Each question must have exactly 4 options
+- options MUST be a JSON array
+- answer MUST be the correct option index (0-3)
+- Return ONLY valid JSON
+- No markdown
+- No explanation
+- No extra text
+
+Correct format:
+[
+  {{
+    "question": "What is React?",
+    "options": [
+      "Library",
+      "Framework",
+      "Database",
+      "Programming Language"
+    ],
+    "answer": 0
+  }}
+]
+
+Document:
+{context}
+
+JSON:
+"""
+)
+
+# ── Flashcard prompt (unchanged) ──────────────────────────────────────────
+FLASHCARD_PROMPT = PromptTemplate(
+    input_variables=["context", "num_cards"],
+    template="""
+Generate exactly {num_cards} study flashcards from the document below.
+
+Return ONLY valid JSON, no extra text:
+[
+  {{
+    "front": "Term or concept",
+    "back": "Clear, concise definition or explanation"
+  }}
+]
+
+Document:
+{context}
+
+JSON:"""
+)
