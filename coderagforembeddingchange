@@ -1,8 +1,7 @@
 import os
-import io
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
@@ -10,42 +9,19 @@ from langchain_groq import ChatGroq
 from core.prompts import CUSTOM_PROMPT, get_mode_prompt
 
 VECTOR_STORE_PATH = os.getenv("VECTOR_STORE_PATH", "./vector_store")
-
-# ── Lazy-loaded embeddings (no RAM hit at startup) ─────────────────────────
-_embeddings = None
-
-def get_embeddings():
-    """
-    Returns HuggingFace Inference API embeddings.
-    Cloud-based — no local model download, ~0 RAM usage.
-    Requires HF_TOKEN env variable (free at huggingface.co).
-    """
-    global _embeddings
-    if _embeddings is None:
-        hf_token = os.getenv("HF_TOKEN")
-        if not hf_token:
-            raise EnvironmentError(
-                "HF_TOKEN environment variable not set. "
-                "Get a free token at https://huggingface.co/settings/tokens"
-            )
-        _embeddings = HuggingFaceInferenceAPIEmbeddings(
-            api_key=hf_token,
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-        )
-    return _embeddings
-
-
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 active_sessions: dict = {}
 
 
 def extract_text_from_pdfs(
     pdf_bytes_list: list[bytes],
-    filenames: list[str] = None,
+    filenames: list[str] = None
 ) -> tuple[list[str], list[dict]]:
     all_texts     = []
     all_metadatas = []
 
     for idx, pdf_bytes in enumerate(pdf_bytes_list):
+        import io
         source_name = (
             filenames[idx] if filenames and idx < len(filenames)
             else f"document_{idx + 1}.pdf"
@@ -63,7 +39,7 @@ def extract_text_from_pdfs(
 
 def split_into_chunks(
     texts: list[str],
-    metadatas: list[dict],
+    metadatas: list[dict]
 ) -> tuple[list[str], list[dict]]:
     splitter = RecursiveCharacterTextSplitter(
         separators=["\n\n", "\n", ".", " ", ""],
@@ -86,13 +62,9 @@ def split_into_chunks(
 def build_vectorstore(
     chunks: list[str],
     metadatas: list[dict],
-    session_id: str,
+    session_id: str
 ) -> FAISS:
-    vectorstore = FAISS.from_texts(
-        texts=chunks,
-        embedding=get_embeddings(),
-        metadatas=metadatas,
-    )
+    vectorstore = FAISS.from_texts(texts=chunks, embedding=embeddings, metadatas=metadatas)
     save_path = f"{VECTOR_STORE_PATH}/{session_id}"
     os.makedirs(save_path, exist_ok=True)
     vectorstore.save_local(save_path)
@@ -102,9 +74,7 @@ def build_vectorstore(
 def load_vectorstore(session_id: str) -> FAISS:
     save_path = f"{VECTOR_STORE_PATH}/{session_id}"
     return FAISS.load_local(
-        save_path,
-        get_embeddings(),
-        allow_dangerous_deserialization=True,
+        save_path, embeddings, allow_dangerous_deserialization=True
     )
 
 
@@ -141,8 +111,6 @@ def process_pdfs_and_create_session(
     return session_id
 
 
-# ── Follow-up query rewriting ──────────────────────────────────────────────
-
 REFERENCE_WORDS = {
     "it", "its", "they", "them", "their", "this", "that", "these", "those",
     "he", "she", "him", "her",
@@ -160,7 +128,8 @@ def is_followup_question(question: str, chat_history: list[dict]) -> bool:
     words = question.lower().split()
     if len(words) > MAX_WORDS_TO_REWRITE:
         return False
-    return any(w.strip("?.,!") in REFERENCE_WORDS for w in words)
+    has_reference = any(w.strip("?.,!") in REFERENCE_WORDS for w in words)
+    return has_reference
 
 
 def rewrite_query(question: str, chat_history: list[dict]) -> str:
@@ -195,21 +164,17 @@ def rewrite_query(question: str, chat_history: list[dict]) -> str:
         return question
 
 
-# ── Non-streaming ask ──────────────────────────────────────────────────────
-
 def ask_question(session_id: str, question: str) -> dict:
     chain    = get_or_create_chain(session_id)
     response = chain.invoke({"question": question})
     return {
         "answer": response["answer"],
         "chat_history": [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": m.content}
+            {"role": "user" if i % 2 == 0 else "bot", "content": m.content}
             for i, m in enumerate(response["chat_history"])
         ],
     }
 
-
-# ── Streaming ask ──────────────────────────────────────────────────────────
 
 async def ask_question_stream(
     session_id:   str,
@@ -217,7 +182,8 @@ async def ask_question_stream(
     mode:         str  = "normal",
     chat_history: list = None,
 ):
-    vectorstore     = load_vectorstore(session_id)
+    vectorstore = load_vectorstore(session_id)
+
     rewritten_query = rewrite_query(question, chat_history or [])
 
     retriever = vectorstore.as_retriever(
@@ -229,10 +195,10 @@ async def ask_question_stream(
     context_parts = []
     sources       = []
     for doc in docs:
-        src      = doc.metadata.get("source", "Unknown")
-        page     = doc.metadata.get("page", "?")
+        src  = doc.metadata.get("source", "Unknown")
+        page = doc.metadata.get("page", "?")
+        context_parts.append(f"[{src} — Page {page}]\n{doc.page_content}")
         citation = f"{src} — Page {page}"
-        context_parts.append(f"[{citation}]\n{doc.page_content}")
         if citation not in sources:
             sources.append(citation)
 
@@ -241,8 +207,9 @@ async def ask_question_stream(
 
     history_text = "No previous conversation."
     if chat_history:
-        lines = []
-        for msg in chat_history[-6:]:
+        recent = chat_history[-6:]
+        lines  = []
+        for msg in recent:
             role = "Human" if msg.get("role") == "user" else "Assistant"
             lines.append(f"{role}: {msg.get('message', '')}")
         history_text = "\n".join(lines)
